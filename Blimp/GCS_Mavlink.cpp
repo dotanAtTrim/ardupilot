@@ -323,7 +323,9 @@ static const ap_message STREAM_EXTENDED_STATUS_msgs[] = {
     MSG_GPS2_RAW,
     MSG_GPS2_RTK,
     MSG_NAV_CONTROLLER_OUTPUT,
+#if AP_FENCE_ENABLED
     MSG_FENCE_STATUS,
+#endif
     MSG_POSITION_TARGET_GLOBAL_INT,
 };
 static const ap_message STREAM_POSITION_msgs[] = {
@@ -486,23 +488,6 @@ MAV_RESULT GCS_MAVLINK_Blimp::handle_command_long_packet(const mavlink_command_l
         return MAV_RESULT_ACCEPTED;
     }
 
-    case MAV_CMD_CONDITION_YAW:
-        // param1 : target angle [0-360]
-        // param2 : speed during change [deg per second]
-        // param3 : direction (-1:ccw, +1:cw)
-        // param4 : relative offset (1) or absolute angle (0)
-        if ((packet.param1 >= 0.0f)   &&
-            (packet.param1 <= 360.0f) &&
-            (is_zero(packet.param4) || is_equal(packet.param4,1.0f))) {
-            // blimp.flightmode->auto_yaw.set_fixed_yaw(
-            // packet.param1,
-            // packet.param2,
-            // (int8_t)packet.param3,
-            // is_positive(packet.param4));
-            return MAV_RESULT_ACCEPTED;
-        }
-        return MAV_RESULT_FAILED;
-
     default:
         return GCS_MAVLINK::handle_command_long_packet(packet, msg);
     }
@@ -529,7 +514,7 @@ void GCS_MAVLINK_Blimp::handleMessage(const mavlink_message_t &msg)
 } // end handle mavlink
 
 
-MAV_RESULT GCS_MAVLINK_Blimp::handle_flight_termination(const mavlink_command_long_t &packet)
+MAV_RESULT GCS_MAVLINK_Blimp::handle_flight_termination(const mavlink_command_int_t &packet)
 {
     MAV_RESULT result = MAV_RESULT_FAILED;
     if (packet.param1 > 0.5f) {

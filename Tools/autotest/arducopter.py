@@ -4599,7 +4599,7 @@ class AutoTestCopter(AutoTest):
                 0.01 # size of target in radians, Y-axis
             )
 
-    def PayLoadPlaceMission(self):
+    def PayloadPlaceMission(self):
         """Test payload placing in auto."""
         self.context_push()
 
@@ -8653,9 +8653,10 @@ class AutoTestCopter(AutoTest):
                 if m.yawspeed > yawspeed_thresh_rads:
                     raise NotAchievedException("Excessive yaw on takeoff: %f deg/s > %f deg/s (frame=%s)" %
                                                (math.degrees(m.yawspeed), math.degrees(yawspeed_thresh_rads), frame))
-            self.install_message_hook(verify_yaw)
+            self.context_push()
+            self.install_message_hook_context(verify_yaw)
             self.takeoff(10)
-            self.remove_message_hook(verify_yaw)
+            self.context_pop()
             self.hover()
             self.change_mode('ALT_HOLD')
             self.delay_sim_time(1)
@@ -8671,13 +8672,14 @@ class AutoTestCopter(AutoTest):
                 if m.roll > roll_thresh_rad:
                     raise NotAchievedException("Excessive roll %f deg > %f deg" %
                                                (math.degrees(m.roll), math.degrees(roll_thresh_rad)))
-            self.install_message_hook(verify_rollpitch)
+            self.context_push()
+            self.install_message_hook_context(verify_rollpitch)
             for i in range(5):
                 self.set_rc(4, 2000)
                 self.delay_sim_time(0.5)
                 self.set_rc(4, 1500)
                 self.delay_sim_time(5)
-            self.remove_message_hook(verify_rollpitch)
+            self.context_pop()
 
             self.do_RTL()
 
@@ -9880,7 +9882,7 @@ class AutoTestCopter(AutoTest):
              self.GuidedSubModeChange,
              self.MAV_CMD_CONDITION_YAW,
              self.LoiterToAlt,
-             self.PayLoadPlaceMission,
+             self.PayloadPlaceMission,
              self.PrecisionLoiterCompanion,
              self.Landing,
              self.PrecisionLanding,
@@ -10000,6 +10002,9 @@ class AutoTestCopter(AutoTest):
              self.MAVLandedStateTakeoff,
              self.Weathervane,
              self.MAV_CMD_AIRFRAME_CONFIGURATION,
+             self.MAV_CMD_NAV_LOITER_UNLIM,
+             self.MAV_CMD_NAV_RETURN_TO_LAUNCH,
+             self.MAV_CMD_NAV_VTOL_LAND,
         ])
         return ret
 
@@ -10264,6 +10269,107 @@ class AutoTestCopter(AutoTest):
         self.disarm_vehicle(force=True)
         self.reboot_sitl()
 
+    def _MAV_CMD_DO_FLIGHTTERMINATION(self, command):
+        self.set_parameters({
+            "SYSID_MYGCS": self.mav.source_system,
+            "DISARM_DELAY": 0,
+        })
+        self.wait_ready_to_arm()
+        self.arm_vehicle()
+        self.context_collect('STATUSTEXT')
+        command(mavutil.mavlink.MAV_CMD_DO_FLIGHTTERMINATION, p1=1)
+        self.wait_disarmed()
+        self.reboot_sitl()
+
+    def MAV_CMD_DO_FLIGHTTERMINATION(self):
+        '''test MAV_CMD_DO_FLIGHTTERMINATION works on Copter'''
+        self._MAV_CMD_DO_FLIGHTTERMINATION(self.run_cmd)
+        self._MAV_CMD_DO_FLIGHTTERMINATION(self.run_cmd_int)
+
+    def MAV_CMD_NAV_LOITER_UNLIM(self):
+        '''ensure MAV_CMD_NAV_LOITER_UNLIM via mavlink works'''
+        for command in self.run_cmd, self.run_cmd_int:
+            self.change_mode('STABILIZE')
+            command(mavutil.mavlink.MAV_CMD_NAV_LOITER_UNLIM)
+            self.wait_mode('LOITER')
+
+    def MAV_CMD_NAV_RETURN_TO_LAUNCH(self):
+        '''ensure MAV_CMD_NAV_RETURN_TO_LAUNCH via mavlink works'''
+        for command in self.run_cmd, self.run_cmd_int:
+            self.change_mode('STABILIZE')
+            command(mavutil.mavlink.MAV_CMD_NAV_RETURN_TO_LAUNCH)
+            self.wait_mode('RTL')
+
+    def MAV_CMD_NAV_VTOL_LAND(self):
+        '''ensure MAV_CMD_NAV_LAND via mavlink works'''
+        for command in self.run_cmd, self.run_cmd_int:
+            self.change_mode('STABILIZE')
+            command(mavutil.mavlink.MAV_CMD_NAV_VTOL_LAND)
+            self.wait_mode('LAND')
+            self.change_mode('STABILIZE')
+            command(mavutil.mavlink.MAV_CMD_NAV_LAND)
+            self.wait_mode('LAND')
+
+    def start_flying_simple_rehome_mission(self, items):
+        '''uploads items, changes mode to auto, waits ready to arm and arms
+        vehicle.  If the first item it a takeoff you can expect the
+        vehicle to fly after this method returns
+        '''
+
+        self.upload_simple_relhome_mission(items)
+
+        self.set_parameter("AUTO_OPTIONS", 3)
+        self.change_mode('AUTO')
+        self.wait_ready_to_arm()
+
+        self.arm_vehicle()
+
+    def _MAV_CMD_DO_LAND_START(self, run_cmd):
+        alt = 5
+        self.start_flying_simple_rehome_mission([
+            (mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, 0, 0, alt),
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 200, 0, alt),
+            (mavutil.mavlink.MAV_CMD_NAV_LAND, 0, 0, 0),
+            (mavutil.mavlink.MAV_CMD_DO_LAND_START, 0, 0, alt),
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 200, 2000, alt),
+            (mavutil.mavlink.MAV_CMD_NAV_LAND, 0, 0, 0),
+        ])
+
+        self.wait_current_waypoint(2)
+        run_cmd(mavutil.mavlink.MAV_CMD_DO_LAND_START)
+        self.wait_current_waypoint(5)
+        # we pretend to be in RTL mode while doing this:
+        self.wait_mode("AUTO_RTL")
+        self.do_RTL()
+
+    def MAV_CMD_DO_LAND_START(self):
+        '''test handling of mavlink-received MAV_CMD_DO_LAND_START command'''
+        self._MAV_CMD_DO_LAND_START(self.run_cmd)
+        self.zero_throttle()
+        self._MAV_CMD_DO_LAND_START(self.run_cmd_int)
+
+    def _MAV_CMD_SET_EKF_SOURCE_SET(self, run_cmd):
+        run_cmd(
+            mavutil.mavlink.MAV_CMD_SET_EKF_SOURCE_SET,
+            17,
+            want_result=mavutil.mavlink.MAV_RESULT_DENIED,
+        )
+
+        self.change_mode('LOITER')
+        self.wait_ready_to_arm()
+
+        run_cmd(mavutil.mavlink.MAV_CMD_SET_EKF_SOURCE_SET, 2)
+
+        self.assert_prearm_failure('Need Position Estimate')
+        run_cmd(mavutil.mavlink.MAV_CMD_SET_EKF_SOURCE_SET, 1)
+
+        self.wait_ready_to_arm()
+
+    def MAV_CMD_SET_EKF_SOURCE_SET(self):
+        '''test setting of source sets using mavlink command'''
+        self._MAV_CMD_SET_EKF_SOURCE_SET(self.run_cmd)
+        self._MAV_CMD_SET_EKF_SOURCE_SET(self.run_cmd_int)
+
     def tests2b(self):  # this block currently around 9.5mins here
         '''return list of all tests'''
         ret = ([
@@ -10328,6 +10434,9 @@ class AutoTestCopter(AutoTest):
             self.RPLidarA2,
             self.SafetySwitch,
             self.BrakeZ,
+            self.MAV_CMD_DO_FLIGHTTERMINATION,
+            self.MAV_CMD_DO_LAND_START,
+            self.MAV_CMD_SET_EKF_SOURCE_SET,
         ])
         return ret
 
